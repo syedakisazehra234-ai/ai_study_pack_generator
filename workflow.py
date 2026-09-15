@@ -4,7 +4,7 @@ from typing import Any, Optional
 from groq import Groq
 import prompts
 
-MODEL="llama-3.3-70b-versatile"
+MODEL="openai/gpt-oss-120b"
 @dataclass
 class Context:
     topic:str; level:str; language:str; difficulty:str; sections:list; num_questions:int; extra_instructions:str
