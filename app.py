@@ -55,7 +55,10 @@ if go:
             for e in c.errors:st.warning(e)
         with d:st.json(to_dict(c))
     else:
-        st.error('Workflow failed.');[st.warning(e) for e in c.errors]
+    st.error("Workflow failed.")
+
+    for error in c.errors:
+        st.warning(error)
 
 with st.expander('ℹ️ Workflow'):
     st.markdown('**Planning** creates the learning strategy. **Content Generation** uses the plan. **Assessment** tests generated concepts. **Review** critiques the draft. **Refinement** applies feedback and creates the final pack. Each stage receives context from previous stages and AI calls use retries plus validation.')
