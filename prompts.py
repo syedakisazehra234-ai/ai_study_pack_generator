@@ -1,17 +1,26 @@
 import json
 
 
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+
 SYSTEM = """
 You are a precise educational AI.
 
 Rules:
+
 1. Return ONLY valid JSON.
-2. Do not use markdown.
-3. Do not add explanations outside JSON.
-4. Follow the requested structure exactly.
-5. Keep responses concise.
+2. Never use markdown outside JSON.
+3. Follow the requested JSON structure.
+4. Keep responses concise.
+5. Do not repeat unnecessary information.
 """
 
+
+# ============================================================
+# PLANNING
+# ============================================================
 
 def plan(c):
 
@@ -19,20 +28,20 @@ def plan(c):
 Create a personalized learning plan.
 
 Topic: {c.topic}
-Student level: {c.level}
+Level: {c.level}
 Language: {c.language}
 Difficulty: {c.difficulty}
 
 Requested sections:
 {", ".join(c.sections)}
 
-Number of quiz questions:
+Quiz questions:
 {c.num_questions}
 
 Extra instructions:
 {c.extra_instructions or "None"}
 
-Return ONLY this JSON structure:
+Return:
 
 {{
   "learning_goal": "",
@@ -45,9 +54,13 @@ Return ONLY this JSON structure:
   "assessment_strategy": ""
 }}
 
-Keep the plan concise.
+Keep it concise.
 """
 
+
+# ============================================================
+# CONTENT
+# ============================================================
 
 def content(c):
 
@@ -58,7 +71,7 @@ def content(c):
     )
 
     return f"""
-Create study content using this learning plan.
+Create concise study content.
 
 Topic: {c.topic}
 Level: {c.level}
@@ -73,7 +86,7 @@ Requested sections:
 
 Do NOT create quiz questions.
 
-Return ONLY this JSON:
+Return:
 
 {{
   "title": "",
@@ -88,9 +101,13 @@ Return ONLY this JSON:
   "examples": []
 }}
 
-Keep the content focused and concise.
+Keep explanations concise.
 """
 
+
+# ============================================================
+# ASSESSMENT
+# ============================================================
 
 def assessment(c):
 
@@ -107,7 +124,7 @@ def assessment(c):
     )
 
     return f"""
-Create exactly {c.num_questions} multiple-choice questions.
+Create exactly {c.num_questions} MCQs.
 
 Topic:
 {c.topic}
@@ -115,22 +132,26 @@ Topic:
 Difficulty:
 {c.difficulty}
 
-Learning plan:
+Plan:
 {plan}
 
-Study content:
+Content:
 {content}
 
-Every question MUST have:
+Each question MUST contain:
 
-- question
+question
+options
+answer
+explanation
+tested_concept
+difficulty
+
+Rules:
+
 - exactly 4 options
-- answer
-- explanation
-- tested_concept
-- difficulty
-
-The answer MUST exactly match one of the four options.
+- answer must match one option
+- concise explanations
 
 Return ONLY:
 
@@ -138,10 +159,12 @@ Return ONLY:
   "quiz": [],
   "assessment_coverage": []
 }}
-
-Keep explanations concise.
 """
 
+
+# ============================================================
+# REVIEW
+# ============================================================
 
 def review(c):
 
@@ -164,7 +187,7 @@ def review(c):
     )
 
     return f"""
-Review this educational study pack.
+Review this study pack.
 
 Topic:
 {c.topic}
@@ -180,13 +203,12 @@ Assessment:
 
 Check:
 
-1. Accuracy
-2. Alignment with learning goals
-3. Coverage
-4. Personalization
-5. Clarity
-6. Quiz correctness
-7. Difficulty consistency
+- accuracy
+- learning alignment
+- coverage
+- personalization
+- clarity
+- quiz correctness
 
 Return ONLY:
 
@@ -205,13 +227,24 @@ Keep the review concise.
 """
 
 
+# ============================================================
+# REFINEMENT
+# ============================================================
+
 def refine(c):
 
     # --------------------------------------------------------
     # IMPORTANT:
-    # We intentionally keep the previous context compact.
-    # This prevents the Refinement request from exceeding
-    # Groq's 8K TPM limit.
+    #
+    # We do NOT send the complete assessment back.
+    #
+    # The final refinement mainly needs:
+    # - original topic
+    # - learning plan
+    # - generated content
+    # - reviewer feedback
+    #
+    # This dramatically reduces token usage.
     # --------------------------------------------------------
 
     plan = json.dumps(
@@ -222,12 +255,6 @@ def refine(c):
 
     content = json.dumps(
         c.content,
-        ensure_ascii=False,
-        separators=(",", ":")
-    )
-
-    assessment = json.dumps(
-        c.assessment,
         ensure_ascii=False,
         separators=(",", ":")
     )
@@ -244,7 +271,7 @@ Create the FINAL study pack.
 Topic:
 {c.topic}
 
-Student level:
+Level:
 {c.level}
 
 Language:
@@ -256,7 +283,7 @@ Difficulty:
 Requested sections:
 {", ".join(c.sections)}
 
-Required quiz questions:
+Number of quiz questions:
 {c.num_questions}
 
 Learning plan:
@@ -265,32 +292,29 @@ Learning plan:
 Study content:
 {content}
 
-Assessment:
-{assessment}
-
 Reviewer feedback:
 {review}
 
-Apply the reviewer's required changes.
+Apply all required reviewer changes.
 
-The final pack must contain:
+Return ONLY:
 
-- title
-- summary
-- key_points
-- flashcards
-- examples
-- quiz
-- study_tips
+{{
+  "title": "",
+  "summary": "",
+  "key_points": [],
+  "flashcards": [],
+  "examples": [],
+  "quiz": [],
+  "study_tips": []
+}}
 
-Quiz requirements:
+Quiz rules:
 
 - exactly {c.num_questions} questions
-- exactly 4 options per question
-- answer must exactly match one option
+- exactly 4 options each
+- answer must match an option
 - concise explanations
 
-Return ONLY valid JSON.
-
-Do not include markdown.
+Keep the final response concise.
 """
