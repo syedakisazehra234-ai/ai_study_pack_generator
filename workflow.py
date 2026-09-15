@@ -14,7 +14,7 @@ MODEL = "openai/gpt-oss-120b"
 # IMPORTANT:
 # Your current Groq limit is 8,000 TPM.
 # Keep completion requests comfortably below that.
-MAX_OUTPUT_TOKENS = 3000
+MAX_OUTPUT_TOKENS = 1800
 
 
 # ============================================================
