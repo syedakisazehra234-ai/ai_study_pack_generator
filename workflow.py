@@ -1,7 +1,12 @@
 import json
+import re
+import time
+
 from dataclasses import dataclass, field, asdict
 from typing import Optional
+
 from groq import Groq
+
 import prompts
 
 
@@ -11,9 +16,8 @@ import prompts
 
 MODEL = "openai/gpt-oss-120b"
 
-# IMPORTANT:
-# Your current Groq limit is 8,000 TPM.
-# Keep completion requests comfortably below that.
+# Your current Groq TPM limit is 8,000.
+# Keep individual completions small.
 MAX_OUTPUT_TOKENS = 1800
 
 
@@ -23,6 +27,7 @@ MAX_OUTPUT_TOKENS = 1800
 
 @dataclass
 class Context:
+
     topic: str
     level: str
     language: str
@@ -46,13 +51,6 @@ class Context:
 # ============================================================
 
 def parse_json(text):
-    """
-    Safely extract JSON from model response.
-    Handles:
-    - normal JSON
-    - ```json ... ```
-    - extra text before/after JSON
-    """
 
     if not text:
         raise ValueError("Empty model response.")
@@ -61,6 +59,7 @@ def parse_json(text):
 
     # Remove markdown code fences
     if text.startswith("```"):
+
         lines = text.splitlines()
 
         if lines and lines[0].startswith("```"):
@@ -71,33 +70,33 @@ def parse_json(text):
 
         text = "\n".join(lines).strip()
 
-    # First attempt
+    # Direct JSON
     try:
         return json.loads(text)
+
     except json.JSONDecodeError:
         pass
 
-    # Try extracting JSON object
+    # Extract JSON object
     start = text.find("{")
     end = text.rfind("}")
 
-    if start != -1 and end != -1 and end > start:
-        return json.loads(text[start:end + 1])
+    if start != -1 and end != -1:
 
-    raise ValueError("Model did not return valid JSON.")
+        return json.loads(
+            text[start:end + 1]
+        )
+
+    raise ValueError(
+        "Model did not return valid JSON."
+    )
 
 
 # ============================================================
 # COMPACT JSON
 # ============================================================
 
-def compact_json(data, max_chars=9000):
-    """
-    Convert data to compact JSON.
-
-    If it is too large, trim it so later stages don't
-    create oversized Groq requests.
-    """
+def compact_json(data, max_chars=6000):
 
     if data is None:
         return "{}"
@@ -111,14 +110,42 @@ def compact_json(data, max_chars=9000):
     if len(text) <= max_chars:
         return text
 
-    return text[:max_chars] + "...[TRUNCATED]"
+    return (
+        text[:max_chars]
+        + "...[TRUNCATED]"
+    )
 
 
 # ============================================================
-# GROQ CALL
+# EXTRACT WAIT TIME FROM 429 ERROR
 # ============================================================
 
-def ai_call(client, prompt, temperature=0.2, retries=2):
+def get_wait_time(error_message):
+
+    match = re.search(
+        r"try again in\s+([0-9.]+)s",
+        error_message,
+        re.IGNORECASE
+    )
+
+    if match:
+
+        return float(match.group(1))
+
+    # Safe default
+    return 15.0
+
+
+# ============================================================
+# GROQ CALL WITH RATE-LIMIT RETRY
+# ============================================================
+
+def ai_call(
+    client,
+    prompt,
+    temperature=0.2,
+    retries=3
+):
 
     last_error = "Unknown error"
 
@@ -127,6 +154,7 @@ def ai_call(client, prompt, temperature=0.2, retries=2):
         try:
 
             response = client.chat.completions.create(
+
                 model=MODEL,
 
                 messages=[
@@ -142,24 +170,59 @@ def ai_call(client, prompt, temperature=0.2, retries=2):
 
                 temperature=temperature,
 
-                # IMPORTANT:
-                # Previously this was 7000.
-                # That caused the 8000 TPM error.
+                # Keep completion small.
                 max_completion_tokens=MAX_OUTPUT_TOKENS,
 
-                # Ask Groq for valid JSON.
                 response_format={
                     "type": "json_object"
                 }
             )
 
-            output = response.choices[0].message.content
+            output = (
+                response
+                .choices[0]
+                .message
+                .content
+            )
 
             return parse_json(output), None
 
-        except Exception as e:
+        except Exception as error:
 
-            last_error = str(e)
+            last_error = str(error)
+
+            # ------------------------------------------------
+            # RATE LIMIT
+            # ------------------------------------------------
+
+            if "429" in last_error:
+
+                wait_seconds = get_wait_time(
+                    last_error
+                )
+
+                # Add a small safety buffer
+                wait_seconds += 2
+
+                if attempt < retries:
+
+                    time.sleep(
+                        wait_seconds
+                    )
+
+                    continue
+
+            # ------------------------------------------------
+            # OTHER ERROR
+            # ------------------------------------------------
+
+            if attempt < retries:
+
+                time.sleep(
+                    2 ** attempt
+                )
+
+                continue
 
     return None, last_error
 
@@ -168,42 +231,64 @@ def ai_call(client, prompt, temperature=0.2, retries=2):
 # QUIZ VALIDATION
 # ============================================================
 
-def quiz_errors(quiz, expected_count):
+def quiz_errors(
+    quiz,
+    expected_count
+):
 
     errors = []
 
     if not isinstance(quiz, list):
-        return ["Quiz is not a list."]
+
+        return [
+            "Quiz is not a list."
+        ]
 
     if len(quiz) != expected_count:
 
         errors.append(
-            f"Expected {expected_count} questions; "
-            f"received {len(quiz)}."
+            f"Expected {expected_count} "
+            f"questions; received {len(quiz)}."
         )
 
-    for i, question in enumerate(quiz, start=1):
+    for i, question in enumerate(
+        quiz,
+        start=1
+    ):
 
-        if not isinstance(question, dict):
+        if not isinstance(
+            question,
+            dict
+        ):
+
             errors.append(
-                f"Question {i} is not a valid object."
+                f"Question {i} is invalid."
             )
+
             continue
 
-        options = question.get("options", [])
+        options = question.get(
+            "options",
+            []
+        )
 
         if len(options) != 4:
 
             errors.append(
-                f"Question {i}: exactly 4 options required."
+                f"Question {i}: "
+                f"exactly 4 options required."
             )
 
-        answer = question.get("answer")
+        answer = question.get(
+            "answer"
+        )
 
         if answer not in options:
 
             errors.append(
-                f"Question {i}: answer is not one of the options."
+                f"Question {i}: "
+                f"answer is not one of "
+                f"the options."
             )
 
     return errors
@@ -226,29 +311,45 @@ def run(
 ):
 
     context = Context(
+
         topic=topic,
+
         level=level,
+
         language=language,
+
         difficulty=difficulty,
+
         sections=sections,
-        num_questions=int(num_questions),
+
+        num_questions=int(
+            num_questions
+        ),
+
         extra_instructions=extra
     )
 
-    client = Groq(api_key=api_key)
+    client = Groq(
+        api_key=api_key
+    )
+
 
     # ========================================================
     # STAGE 1 — PLANNING
     # ========================================================
 
     if progress:
-        progress(1, "Planning")
-
-    plan_prompt = prompts.plan(context)
+        progress(
+            1,
+            "Planning"
+        )
 
     result, error = ai_call(
+
         client,
-        plan_prompt,
+
+        prompts.plan(context),
+
         temperature=0.2
     )
 
@@ -261,7 +362,10 @@ def run(
         return context
 
     context.plan = result
-    context.completed.append("Planning")
+
+    context.completed.append(
+        "Planning"
+    )
 
 
     # ========================================================
@@ -269,13 +373,17 @@ def run(
     # ========================================================
 
     if progress:
-        progress(2, "Content Generation")
-
-    content_prompt = prompts.content(context)
+        progress(
+            2,
+            "Content Generation"
+        )
 
     result, error = ai_call(
+
         client,
-        content_prompt,
+
+        prompts.content(context),
+
         temperature=0.3
     )
 
@@ -288,7 +396,10 @@ def run(
         return context
 
     context.content = result
-    context.completed.append("Content Generation")
+
+    context.completed.append(
+        "Content Generation"
+    )
 
 
     # ========================================================
@@ -296,13 +407,17 @@ def run(
     # ========================================================
 
     if progress:
-        progress(3, "Assessment")
-
-    assessment_prompt = prompts.assessment(context)
+        progress(
+            3,
+            "Assessment"
+        )
 
     result, error = ai_call(
+
         client,
-        assessment_prompt,
+
+        prompts.assessment(context),
+
         temperature=0.2
     )
 
@@ -315,14 +430,20 @@ def run(
         return context
 
     context.assessment = result
-    context.completed.append("Assessment")
 
-    # Validate quiz
-    quiz = result.get("quiz", [])
+    context.completed.append(
+        "Assessment"
+    )
 
     context.errors.extend(
+
         quiz_errors(
-            quiz,
+
+            result.get(
+                "quiz",
+                []
+            ),
+
             context.num_questions
         )
     )
@@ -333,13 +454,17 @@ def run(
     # ========================================================
 
     if progress:
-        progress(4, "Review")
-
-    review_prompt = prompts.review(context)
+        progress(
+            4,
+            "Review"
+        )
 
     result, error = ai_call(
+
         client,
-        review_prompt,
+
+        prompts.review(context),
+
         temperature=0.1
     )
 
@@ -352,7 +477,10 @@ def run(
         return context
 
     context.review = result
-    context.completed.append("Review")
+
+    context.completed.append(
+        "Review"
+    )
 
 
     # ========================================================
@@ -360,13 +488,17 @@ def run(
     # ========================================================
 
     if progress:
-        progress(5, "Refinement")
-
-    refinement_prompt = prompts.refine(context)
+        progress(
+            5,
+            "Refinement"
+        )
 
     result, error = ai_call(
+
         client,
-        refinement_prompt,
+
+        prompts.refine(context),
+
         temperature=0.2
     )
 
@@ -379,7 +511,10 @@ def run(
         return context
 
     context.refined_pack = result
-    context.completed.append("Refinement")
+
+    context.completed.append(
+        "Refinement"
+    )
 
 
     # ========================================================
@@ -388,14 +523,17 @@ def run(
 
     if context.refined_pack:
 
-        final_quiz = context.refined_pack.get(
-            "quiz",
-            []
+        final_quiz = (
+            context.refined_pack
+            .get("quiz", [])
         )
 
         context.errors.extend(
+
             quiz_errors(
+
                 final_quiz,
+
                 context.num_questions
             )
         )
@@ -404,8 +542,9 @@ def run(
 
 
 # ============================================================
-# CONVERT CONTEXT TO DICT
+# CONVERT TO DICTIONARY
 # ============================================================
 
 def to_dict(context):
+
     return asdict(context)
